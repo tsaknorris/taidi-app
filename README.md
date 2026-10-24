@@ -1,138 +1,118 @@
-# 🧹 TAIDI APP (Taidi)
+# Taidi App
 
-> **"Kun työpöytä on sekaisin, se siivotaan – ei 'tidy up', vaan TAIDI APP!"** 🇫🇮
+Kun huone tai sovellusvalikko on sekaisin, se siivotaan. Ei "tidy up", vaan **Taidi App**.
 
-**Taidi App** is a fast, touch-friendly application folder and grid organizer for **Sailfish OS** (tested on Jolla Phone 2026, Sailfish OS 5.2+).
+Taidi App tekee Sailfish OS:n sovellusvalikosta (Lipstick) siistin ja helposti hallittavan:
+1. **5×7 tiivis ruudukko** – kaikki sovellukset ja kansiot mahtuvat yhdelle ruudulle ilman kilometrien vierittämistä.
+2. **Kansioiden hallinta yhdellä napautuksella** – ei enää sormella raahaamista ja ohi lipeämistä.
+3. **Puhdas .patch-toteutus** – ei sisällä Jollan proprietary-koodia, vaan patchaa laitteen omat tiedostot turvallisesti.
+4. **Komentorivityökalu (`taidi`)** – suoraan `applications.menu`:ta lukeva ja atomisesti muokkaava CLI-työkalu.
 
-Instead of endlessly scrolling through pages of unorganized application icons, **Taidi App** compacts your home launcher grid and provides zero-drag, one-tap folder management directly on your screen and via CLI.
-
----
-
-## ✨ Features
-
-- **📱 5×7 Compact Launcher Grid:**
-  - Displays up to 35 icons per screen in portrait mode (7×4 in landscape).
-  - Fits all your core apps and folders onto **a single screen**.
-  - Optimized launcher icon scale and label metrics for clean readability.
-
-- **📂 One-Tap Folder Management (No Frustrating Drag-and-Drop):**
-  - **Inside Folders:** Tap **`+ Apps`** in the folder header to open the App Manager. Tap any app to immediately add it to or remove it from the folder.
-  - **On Main Grid:** Long-press any icon to enter Edit Mode:
-    - Tap **`+ New Folder`** in the top action bar to create a folder instantly.
-    - Tap any app to open **`Move "<App>" to...`**, letting you send it to any folder or create a new folder with one tap.
-  - **Folder Customization:** Tap the folder title to rename it, or tap the folder shape icon to choose from 16 Jolla icons.
-  - **No Accidental Folder Destruction:** Fixes the stock Sailfish behavior where 1-item folders auto-destructed.
-
-- **🛠️ Powerful CLI Tool (`taidi`):**
-  - Standalone Python 3 manager stored in user space (`~/.config/lipstick/applications.menu` and `~/.local/share/taidi/folders.json`).
-  - Automatic categorization, JSON backup, and strict XML integrity validation (guarantees zero apps are ever lost or duplicated).
-
-- **🛡️ 100% Reversible (Zero Risk):**
-  - Includes a one-command restore script (`uninstall.sh` / `revert.sh`) that returns your phone to the exact stock launcher state at any time.
+Testattu ja toimivaksi todettu Sailfish OS 5.2:lla (Jolla Phone 2026).
 
 ---
 
-## 🚀 Installation
+## Miten tämä toimii?
 
-### Option A: Local Installation (On the Jolla Phone)
+Vakio-Lipstickissä sovellusten ryhmittely kansioihin vaatii kuvakkeiden tarkkaa raahaamista toistensa päälle. Jos sovelluksia on 60+, valikon selaaminen ja järjestely on hidasta.
 
-1. Copy or clone this repository to your device:
-   ```bash
-   git clone https://github.com/tsaknorris/taidi-app.git
-   cd taidi-app
-   ```
-2. Run the installer:
-   ```bash
-   chmod +x scripts/install.sh
-   ./scripts/install.sh
-   ```
-   *(Prompts for `devel-su` root privileges to install the QML launcher patch to `/usr/share/lipstick-jolla-home-qt5/launcher/` and restarts Lipstick.)*
+Taidi App tekee kaksi pientä QML-laajennusta ja antaa kätevän CLI-komennon:
 
-3. Apply default categorization (optional):
-   ```bash
-   taidi init-default
-   ```
+- **Kansion sisällä:** Otsikon vieressä on **`+ Apps`** -nappi. Sitä painamalla aukeaa lista, josta sovelluksia voi lisätä kansioon tai poistaa siitä suorilla napautuksilla.
+- **Päävalikossa:** Kun painat kuvaketta pitkään (muokkaustila), voit luoda uuden kansion yläpalkin napista tai napauttaa mitä tahansa sovellusta siirtääksesi sen suoraan valitsemaasi kansioon.
+- **1 sovelluksen kansiot:** Korjaa vakio-Lipstickin ärsyttävän bugin, jossa kansio tuhoutuu automaattisesti jos sinne jää vain yksi sovellus.
+- **Turvallinen patchaus:** Repossa ei ole Jollan omia QML-tiedostoja. Asennusohjelma tarkistaa tiedostot ensin (`--dry-run`), patchaa ne puhtaan Python-patcherin avulla (ei vaadi erillistä `patch`-pakettia) ja varmuuskopioi alkuperäiset `.taidi_orig`-päätteellä. Jos Lipstick ei käynnisty onnistuneesti, skripti palauttaa automaattisesti vanhat tiedostot heti.
 
 ---
 
-### Option B: Remote Installation from PC over SSH
+## Asennus
 
-1. Connect your PC to your Jolla (USB networking `192.168.2.15` or WLAN/Hotspot).
-2. Run from your computer:
-   ```bash
-   ./scripts/deploy_remote.sh <JOLLA_IP>
-   ```
-   *(e.g., `./scripts/deploy_remote.sh 192.168.2.15`)*
-
----
-
-## 📖 CLI Usage (`taidi`)
-
-Once installed, the `taidi` command is available in your shell:
+### Suoraan puhelimessa (Terminal / SSH):
 
 ```bash
-# Check status and verify XML/app integrity
+git clone https://github.com/tsaknorris/taidi-app.git
+cd taidi-app
+./scripts/install.sh
+```
+
+Skripti kysyy `devel-su`-salasanan patchien asentamista varten, säätää 5×7-ruudukon ja käynnistää Lipstickin uudelleen.
+
+### Tietokoneelta SSH:n yli:
+
+```bash
+./scripts/deploy_remote.sh 192.168.2.15
+```
+*(Korvaa IP puhelimesi osoitteella: USB-tilan oletus on `192.168.2.15`, WLAN/Hotspot oman verkkosi mukaan).*
+
+---
+
+## Komentorivityökalu: `taidi`
+
+`taidi` lukee ja muokkaa suoraan tiedostoa `~/.config/lipstick/applications.menu`. Se käyttää aina laitteen todellista nykytilaa ainoana totuuden lähteenään (single source of truth) ja kirjoittaa tiedoston atomisesti (`os.replace`), joten mikään manuaalinen muutos ei pyyhkiydy vahingossa.
+
+```bash
+# Näytä nykyinen tila ja kansioiden sovellukset
 taidi status
 
-# Apply default smart grouping (8 root pinned apps + 9 logical folders)
+# Järjestä sovellukset automaattisesti loogisiin oletuskansioihin (8 tärkeintä ylös + 9 kansiota)
 taidi init-default
 
-# Create a new folder
-taidi create-folder "Work" icon-launcher-folder-05
-
-# Move an app to a folder (supports search by name or desktop filename)
-taidi move "Slack" "Work"
+# Siirrä sovellus kansioon (löytää nimen tai .desktop-tiedoston perusteella)
+taidi move "WhatsApp" "Social"
 taidi move "DOOM" "Games"
 
-# Move an app back to the main grid
-taidi move "Slack" root
+# Siirrä sovellus takaisin pääruudukkoon
+taidi move "WhatsApp" root
 
-# Rename or delete a folder
-taidi rename-folder "Work" "Office"
-taidi delete-folder "Office"  # Safely returns all contained apps to the root grid
+# Luo tai nimeä kansio
+taidi create-folder "Pelit" icon-launcher-folder-11
+taidi rename-folder "Pelit" "Games"
 
-# Synchronize lipstick's XML changes back into folders.json
-taidi sync-from-menu
+# Poista kansio (siirtää sen sovellukset takaisin pääruudukkoon, mikään ei katoa)
+taidi delete-folder "Games"
 ```
 
 ---
 
-## 🔄 Uninstallation / Restore Stock State
+## Palautus / Poisto (Uninstall)
 
-To revert your phone back to the stock Sailfish OS launcher, run:
+Jos haluat palata takaisin täysin alkuperäiseen Sailfish OS -tilaan:
 
 ```bash
 ./scripts/uninstall.sh
 ```
-or run the device backup script:
-```bash
-~/lipstick_backup/revert.sh
-```
 
-This restores the original `applications.menu`, stock QML files, and resets `dconf` launcher grid settings.
+Tämä kumoaa patchit (`patch -R`), palauttaa alkuperäiset tiedostot `.taidi_orig`-varmuuskopioista, nollaa ruudukon dconf-asetukset ja käynnistää Lipstickin.
+
+Hätätilanteessa (jos UI ei jostain syystä nousisi):
+```bash
+devel-su cp -f /usr/share/lipstick-jolla-home-qt5/launcher/*.taidi_orig /usr/share/lipstick-jolla-home-qt5/launcher/
+systemctl --user restart lipstick
+```
 
 ---
 
-## 🏗️ Architecture
+## Rakenne
 
 ```
 taidi-app/
 ├── bin/
-│   └── taidi               # Python 3 CLI & folder structure generator
-├── qml/
-│   ├── LauncherGrid.qml    # 5x7 grid, quick-move sheet, edit mode toolbar
-│   └── LauncherFolder.qml  # Folder view with '+ Apps' manager overlay
+│   └── taidi               # Päätyökalu (Python 3, muokkaa applications.menu:ta)
+├── patches/
+│   ├── LauncherGrid.patch  # 5x7 ruudukko, pikasiirto, muokkauspalkki
+│   └── LauncherFolder.patch# Kansion sisäinen '+ Apps' valintalista
 ├── scripts/
-│   ├── install.sh          # On-device installer
-│   ├── uninstall.sh        # On-device uninstaller & stock restore
-│   └── deploy_remote.sh    # Host-to-device SSH deployer
-├── LICENSE                 # MIT License
+│   ├── install.sh          # Asennusskripti (dry-run + auto-rollback)
+│   ├── uninstall.sh        # Palautusskripti
+│   ├── patcher.py          # Kevyt riippuvuudeton unified diff -patcheri
+│   └── deploy_remote.sh    # SSH-asennus koneelta luuriin
+├── LICENSE                 # MIT
 └── README.md
 ```
 
 ---
 
-## 📜 License
+## Lisenssi
 
-MIT License. Copyright (c) 2026 tsaknorris.
-All Sailfish OS / Lipstick original components copyright (c) Jolla Ltd & Open Mobile Platform LLC.
+MIT (c) 2026 tsaknorris.
+Patchit on tarkoitettu sovellettavaksi Sailfish OS:n Lipstick-komponentteihin laitteella.

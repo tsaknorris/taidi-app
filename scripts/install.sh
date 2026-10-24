@@ -1,69 +1,111 @@
 #!/bin/sh
-# TAIDI APP - Local Installer for Sailfish OS
-# Installs Taidi QML launcher modifications and the CLI management tool.
+# TAIDI APP - Installer for Sailfish OS
+# Uses unified diff patches to avoid overwriting or distributing proprietary system files.
+# Features automatic dry-run preflight check and auto-rollback on failure.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-BACKUP_DIR="$HOME/lipstick_backup"
 LAUNCHER_DIR="/usr/share/lipstick-jolla-home-qt5/launcher"
-BIN_DIR="$HOME/.local/bin"
+PATCHER="python3 $SCRIPT_DIR/scripts/patcher.py"
+
+# Resolve non-root target user and their home directory
+if [ "$(id -u)" = "0" ]; then
+    TARGET_USER="${SUDO_USER:-defaultuser}"
+else
+    TARGET_USER="$USER"
+fi
+TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
+BACKUP_DIR="$TARGET_HOME/lipstick_backup"
 
 echo "=== TAIDI APP Installer ==="
+echo "Target user: $TARGET_USER ($TARGET_HOME)"
 
-# 1. Ensure backup directory exists and backup original files if not yet done
-mkdir -p "$BACKUP_DIR/config_lipstick" "$BACKUP_DIR/usr_launcher"
+# Require root for modifying /usr/share system files
+if [ "$(id -u)" != "0" ]; then
+    echo "Root privileges required to patch launcher components."
+    echo "Re-running with devel-su..."
+    exec devel-su /bin/sh "$0" "$@"
+fi
+
+# 1. Verify required files exist
+if [ ! -f "$LAUNCHER_DIR/LauncherGrid.qml" ] || [ ! -f "$LAUNCHER_DIR/LauncherFolder.qml" ]; then
+    echo "Error: Sailfish OS lipstick launcher files not found in $LAUNCHER_DIR!"
+    exit 1
+fi
+
+# 2. Safety backups (.taidi_orig and ~/lipstick_backup)
+echo "[1/5] Checking safety backups..."
+mkdir -p "$BACKUP_DIR/usr_launcher" "$BACKUP_DIR/config_lipstick"
+if [ ! -f "$LAUNCHER_DIR/LauncherGrid.qml.taidi_orig" ]; then
+    cp -p "$LAUNCHER_DIR/LauncherGrid.qml" "$LAUNCHER_DIR/LauncherGrid.qml.taidi_orig"
+    cp -p "$LAUNCHER_DIR/LauncherFolder.qml" "$LAUNCHER_DIR/LauncherFolder.qml.taidi_orig"
+fi
 if [ ! -f "$BACKUP_DIR/usr_launcher/LauncherGrid.qml" ]; then
-    echo "[1/5] Creating safety backup in $BACKUP_DIR..."
-    cp -a "$LAUNCHER_DIR"/*.qml "$BACKUP_DIR/usr_launcher/" 2>/dev/null || true
-    cp -a "$LAUNCHER_DIR"/*.qml "$BACKUP_DIR/" 2>/dev/null || true
-    cp -a ~/.config/lipstick/applications.menu "$BACKUP_DIR/config_lipstick/" 2>/dev/null || true
-    cp -a ~/.config/lipstick/applications.menu "$BACKUP_DIR/" 2>/dev/null || true
-    dconf dump /desktop/sailfish/experimental/ > "$BACKUP_DIR/dconf_experimental.dump" 2>/dev/null || true
+    cp -p "$LAUNCHER_DIR/LauncherGrid.qml.taidi_orig" "$BACKUP_DIR/usr_launcher/LauncherGrid.qml"
+    cp -p "$LAUNCHER_DIR/LauncherFolder.qml.taidi_orig" "$BACKUP_DIR/usr_launcher/LauncherFolder.qml"
+fi
+if [ -f "$TARGET_HOME/.config/lipstick/applications.menu" ] && [ ! -f "$BACKUP_DIR/config_lipstick/applications.menu" ]; then
+    cp -p "$TARGET_HOME/.config/lipstick/applications.menu" "$BACKUP_DIR/config_lipstick/applications.menu"
 fi
 
-# 2. Install QML files into Lipstick launcher
-echo "[2/5] Installing QML launcher components (requires root)..."
-TMP_DIR="/tmp/taidi_install_$$"
-mkdir -p "$TMP_DIR"
-cp "$SCRIPT_DIR/qml/LauncherGrid.qml" "$SCRIPT_DIR/qml/LauncherFolder.qml" "$TMP_DIR/"
-
-cat << 'EOF' > "$TMP_DIR/apply_root.sh"
-#!/bin/sh
-set -e
-LAUNCHER_DIR="/usr/share/lipstick-jolla-home-qt5/launcher"
-TMP="$1"
-cp -f "$TMP/LauncherGrid.qml" "$LAUNCHER_DIR/LauncherGrid.qml"
-cp -f "$TMP/LauncherFolder.qml" "$LAUNCHER_DIR/LauncherFolder.qml"
-chown root:root "$LAUNCHER_DIR/LauncherGrid.qml" "$LAUNCHER_DIR/LauncherFolder.qml"
-chmod 644 "$LAUNCHER_DIR/LauncherGrid.qml" "$LAUNCHER_DIR/LauncherFolder.qml"
-EOF
-chmod +x "$TMP_DIR/apply_root.sh"
-
-if [ "$(id -u)" = "0" ]; then
-    "$TMP_DIR/apply_root.sh" "$TMP_DIR"
-else
-    devel-su -c /bin/sh "$TMP_DIR/apply_root.sh" "$TMP_DIR"
+# 3. Dry-run preflight checks
+echo "[2/5] Testing patches against your device's system files..."
+if ! $PATCHER --dry-run "$LAUNCHER_DIR/LauncherGrid.qml" "$SCRIPT_DIR/patches/LauncherGrid.patch"; then
+    echo "Error: LauncherGrid.patch does not match your system file! Aborting to prevent breakage."
+    exit 1
 fi
-rm -rf "$TMP_DIR"
+if ! $PATCHER --dry-run "$LAUNCHER_DIR/LauncherFolder.qml" "$SCRIPT_DIR/patches/LauncherFolder.patch"; then
+    echo "Error: LauncherFolder.patch does not match your system file! Aborting to prevent breakage."
+    exit 1
+fi
 
-# 3. Install CLI tool
-echo "[3/5] Installing CLI tool 'taidi' to $BIN_DIR/taidi..."
-mkdir -p "$BIN_DIR"
-cp -f "$SCRIPT_DIR/bin/taidi" "$BIN_DIR/taidi"
-chmod +x "$BIN_DIR/taidi"
+# 4. Apply patches
+echo "[3/5] Applying patches..."
+$PATCHER "$LAUNCHER_DIR/LauncherGrid.qml" "$SCRIPT_DIR/patches/LauncherGrid.patch"
+$PATCHER "$LAUNCHER_DIR/LauncherFolder.qml" "$SCRIPT_DIR/patches/LauncherFolder.patch"
 
-# 4. Set compact 5x7 grid in dconf
-echo "[4/5] Configuring 5x7 compact grid..."
+# 5. Install CLI tool
+echo "[4/5] Installing CLI tool 'taidi'..."
+mkdir -p "$TARGET_HOME/.local/bin"
+cp -f "$SCRIPT_DIR/bin/taidi" "$TARGET_HOME/.local/bin/taidi"
+chmod +x "$TARGET_HOME/.local/bin/taidi"
+chown "$TARGET_USER:$(id -gn "$TARGET_USER")" "$TARGET_HOME/.local/bin/taidi"
+# Also install to /usr/local/bin for global terminal access
+mkdir -p /usr/local/bin
+cp -f "$SCRIPT_DIR/bin/taidi" /usr/local/bin/taidi
+chmod +x /usr/local/bin/taidi
+
+# 6. Configure compact 5x7 grid in user's dconf
+su - "$TARGET_USER" -c "
 dconf write /desktop/sailfish/experimental/launcher_columns_portrait 5
 dconf write /desktop/sailfish/experimental/launcher_rows_portrait 7
 dconf write /desktop/sailfish/experimental/launcher_columns_landscape 7
 dconf write /desktop/sailfish/experimental/launcher_rows_landscape 4
+"
 
-# 5. Restart Lipstick
-echo "[5/5] Restarting Lipstick..."
-(sleep 1 && mcetool --set-display-state=on 2>/dev/null || true) &
-systemctl --user restart lipstick
+# 7. Restart Lipstick with auto-rollback guard
+echo "[5/5] Restarting Lipstick and validating runtime..."
+su - "$TARGET_USER" -c "(sleep 1 && mcetool --set-display-state=on 2>/dev/null || true) & systemctl --user restart lipstick"
+
+# Healthcheck loop (up to 8 seconds)
+LIPSTICK_HEALTHY=0
+for i in 1 2 3 4 5 6 7 8; do
+    sleep 1
+    if su - "$TARGET_USER" -c "systemctl --user is-active lipstick" 2>/dev/null | grep -q "^active"; then
+        LIPSTICK_HEALTHY=1
+        break
+    fi
+done
+
+if [ "$LIPSTICK_HEALTHY" != "1" ]; then
+    echo "WARNING: Lipstick failed to start cleanly! Rolling back patches..."
+    $PATCHER -R "$LAUNCHER_DIR/LauncherGrid.qml" "$SCRIPT_DIR/patches/LauncherGrid.patch" 2>/dev/null || cp -f "$LAUNCHER_DIR/LauncherGrid.qml.taidi_orig" "$LAUNCHER_DIR/LauncherGrid.qml"
+    $PATCHER -R "$LAUNCHER_DIR/LauncherFolder.qml" "$SCRIPT_DIR/patches/LauncherFolder.patch" 2>/dev/null || cp -f "$LAUNCHER_DIR/LauncherFolder.qml.taidi_orig" "$LAUNCHER_DIR/LauncherFolder.qml"
+    su - "$TARGET_USER" -c "systemctl --user restart lipstick"
+    echo "Rollback completed. System restored safely."
+    exit 1
+fi
 
 echo ""
-echo "=== Installation complete! ==="
-echo "Taidi App is now active. Open your app grid to see the compact layout and folder tools."
+echo "=== Taidi App installed successfully! ==="
+echo "Launcher grid is now 5x7 and folder tools are active."

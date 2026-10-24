@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-Jolla 2026 (Sailfish OS) Home-Directory Folder & Launcher Grid Manager.
-Manages ~/.config/lipstick/applications.menu, ~/.config/lipstick/Folder_*.directory,
-and ~/.local/share/jolla-folders/folders.json (mirrored to ~/.local/share/tietix-folders/folders.json).
+Taidi CLI - Sailfish OS Launcher Grid & Folder Organizer.
+
+Single source of truth: ~/.config/lipstick/applications.menu
+Atomic writes: uses temporary file + os.replace() to prevent corruption.
+Zero proprietary dependencies: purely manipulates standard freedesktop / lipstick menu XML.
 """
 
 import configparser
 import json
 import os
 import re
-import shutil
-import subprocess
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -19,13 +19,8 @@ HOME = Path.home()
 LIPSTICK_CONFIG_DIR = HOME / ".config" / "lipstick"
 APPLICATIONS_MENU = LIPSTICK_CONFIG_DIR / "applications.menu"
 BACKUP_MENU = HOME / "lipstick_backup" / "config_lipstick" / "applications.menu"
-
 TAIDI_DIR = HOME / ".local" / "share" / "taidi"
-JOLLA_FOLDERS_DIR = HOME / ".local" / "share" / "jolla-folders"
-TIETIX_FOLDERS_DIR = HOME / ".local" / "share" / "tietix-folders"
-FOLDERS_JSON = TAIDI_DIR / "folders.json"
-LEGACY_JSON = JOLLA_FOLDERS_DIR / "folders.json"
-TIETIX_JSON = TIETIX_FOLDERS_DIR / "folders.json"
+EXPORT_JSON = TAIDI_DIR / "folders.json"
 
 DEFAULT_PINNED_ROOT = [
     "voicecall-ui.desktop",
@@ -163,7 +158,7 @@ DEFAULT_FOLDERS = [
 
 
 def get_desktop_metadata():
-    """Reads .desktop files from standard Sailfish application directories."""
+    """Reads .desktop files to resolve titles and icons."""
     meta = {}
     search_dirs = [
         Path("/usr/share/applications"),
@@ -177,114 +172,31 @@ def get_desktop_metadata():
             try:
                 cp.read(p, encoding="utf-8")
                 title = cp.get("Desktop Entry", "Name", fallback=p.stem)
-                nodisplay = cp.get("Desktop Entry", "NoDisplay", fallback="false").lower() == "true"
                 icon = cp.get("Desktop Entry", "Icon", fallback="")
-                meta[p.name] = {"title": title, "nodisplay": nodisplay, "icon": icon, "path": str(p)}
+                meta[p.name] = {"title": title, "icon": icon, "path": str(p)}
             except Exception:
-                meta[p.name] = {"title": p.stem, "nodisplay": False, "icon": "", "path": str(p)}
+                meta[p.name] = {"title": p.stem, "icon": "", "path": str(p)}
     return meta
 
 
-def collect_all_menu_apps(menu_path: Path):
-    """Collects all .desktop filenames present anywhere in an applications.menu XML file."""
-    if not menu_path.exists():
-        return []
+def load_menu():
+    """
+    Parses ~/.config/lipstick/applications.menu directly as the SINGLE SOURCE OF TRUTH.
+    Returns:
+      root_apps: list of str (desktop filenames)
+      folders: list of dict {"id": str, "title": str, "icon": str, "dir_file": Path, "apps": list}
+    """
+    if not APPLICATIONS_MENU.exists():
+        if BACKUP_MENU.exists():
+            menu_path = BACKUP_MENU
+        else:
+            return [], []
+    else:
+        menu_path = APPLICATIONS_MENU
+
     tree = ET.parse(menu_path)
     root = tree.getroot()
-    apps = []
-    for elem in root.iter("Filename"):
-        if elem.text and elem.text.strip():
-            fn = elem.text.strip()
-            if fn not in apps:
-                apps.append(fn)
-    return apps
 
-
-def get_authoritative_app_list():
-    """Returns the complete, deduplicated list of launcher apps from backup + current menu."""
-    apps = []
-    for source in [BACKUP_MENU, APPLICATIONS_MENU]:
-        for fn in collect_all_menu_apps(source):
-            if fn not in apps:
-                apps.append(fn)
-    return apps
-
-
-def build_default_state():
-    """Builds the default folder structure ensuring every authoritative app is included exactly once."""
-    all_apps = get_authoritative_app_list()
-    assigned = set()
-
-    root_apps = []
-    for fn in DEFAULT_PINNED_ROOT:
-        if fn in all_apps and fn not in assigned:
-            root_apps.append(fn)
-            assigned.add(fn)
-
-    folders = []
-    for fdef in DEFAULT_FOLDERS:
-        f_apps = []
-        for fn in fdef["apps"]:
-            if fn in all_apps and fn not in assigned:
-                f_apps.append(fn)
-                assigned.add(fn)
-        folders.append({
-            "id": fdef["id"],
-            "title": fdef["title"],
-            "icon": fdef["icon"],
-            "apps": f_apps,
-        })
-
-    # Any remaining apps from all_apps not yet assigned go to root_apps so nothing is ever lost
-    for fn in all_apps:
-        if fn not in assigned:
-            root_apps.append(fn)
-            assigned.add(fn)
-
-    return {"root_apps": root_apps, "folders": folders}
-
-
-def load_state():
-    """Loads state from folders.json or initializes default state if missing."""
-    target_json = FOLDERS_JSON if FOLDERS_JSON.exists() else (LEGACY_JSON if LEGACY_JSON.exists() else None)
-    if target_json and target_json.exists():
-        data = json.loads(target_json.read_text(encoding="utf-8"))
-        # Reconcile with authoritative app list so no app is ever lost or duplicated
-        all_apps = get_authoritative_app_list()
-        seen = set()
-        clean_root = []
-        for fn in data.get("root_apps", []):
-            if fn in all_apps and fn not in seen:
-                clean_root.append(fn)
-                seen.add(fn)
-        clean_folders = []
-        for idx, f in enumerate(data.get("folders", []), start=1):
-            f_apps = []
-            for fn in f.get("apps", []):
-                if fn in all_apps and fn not in seen:
-                    f_apps.append(fn)
-                    seen.add(fn)
-            clean_folders.append({
-                "id": f.get("id") or f"Folder_{idx:02d}",
-                "title": f.get("title") or f"Folder {idx}",
-                "icon": f.get("icon") or "icon-launcher-folder-01",
-                "apps": f_apps,
-            })
-        for fn in all_apps:
-            if fn not in seen:
-                clean_root.append(fn)
-                seen.add(fn)
-        return {"root_apps": clean_root, "folders": clean_folders}
-    return build_default_state()
-
-
-def sync_from_menu():
-    """Reads current ~/.config/lipstick/applications.menu and syncs it into folders.json."""
-    if not APPLICATIONS_MENU.exists():
-        return build_default_state()
-
-    tree = ET.parse(APPLICATIONS_MENU)
-    root = tree.getroot()
     root_apps = []
     folders = []
     seen = set()
@@ -300,14 +212,18 @@ def sync_from_menu():
             title_el = child.find("Name")
             dir_el = child.find("Directory")
             title = title_el.text.strip() if (title_el is not None and title_el.text) else f"Folder {folder_idx}"
-            dir_path = dir_el.text.strip() if (dir_el is not None and dir_el.text) else ""
+            dir_str = dir_el.text.strip() if (dir_el is not None and dir_el.text) else ""
+
             icon = "icon-launcher-folder-01"
             folder_id = f"Folder_{folder_idx:02d}"
-            if dir_path:
-                dp = Path(dir_path)
+            dir_file = None
+
+            if dir_str:
+                dp = Path(dir_str)
                 if not dp.is_absolute():
                     dp = LIPSTICK_CONFIG_DIR / dp
                 folder_id = dp.stem
+                dir_file = dp
                 if dp.exists():
                     cp = configparser.ConfigParser(interpolation=None, strict=False)
                     try:
@@ -315,6 +231,9 @@ def sync_from_menu():
                         icon = cp.get("Desktop Entry", "Icon", fallback=icon)
                     except Exception:
                         pass
+            else:
+                dir_file = LIPSTICK_CONFIG_DIR / f"{folder_id}.directory"
+
             f_apps = []
             for fn_el in child.findall("Filename"):
                 if fn_el.text and fn_el.text.strip():
@@ -322,38 +241,38 @@ def sync_from_menu():
                     if fn not in seen:
                         f_apps.append(fn)
                         seen.add(fn)
+
             folders.append({
                 "id": folder_id,
                 "title": title,
                 "icon": icon,
+                "dir_file": dir_file,
                 "apps": f_apps,
             })
             folder_idx += 1
 
-    # Ensure no app from authoritative list was dropped
-    for fn in get_authoritative_app_list():
-        if fn not in seen:
-            root_apps.append(fn)
-            seen.add(fn)
-
-    state = {"root_apps": root_apps, "folders": folders}
-    save_state_and_menu(state)
-    return state
+    return root_apps, folders
 
 
-def save_state_and_menu(state):
-    """Writes folders.json, Folder_*.directory files, and ~/.config/lipstick/applications.menu."""
-    TAIDI_DIR.mkdir(parents=True, exist_ok=True)
-    JOLLA_FOLDERS_DIR.mkdir(parents=True, exist_ok=True)
-    TIETIX_FOLDERS_DIR.mkdir(parents=True, exist_ok=True)
+def save_menu(root_apps, folders):
+    """
+    Atomically writes ~/.config/lipstick/applications.menu using tempfile + os.replace.
+    Also ensures directory files exist and exports an informational folders.json.
+    """
     LIPSTICK_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    TAIDI_DIR.mkdir(parents=True, exist_ok=True)
 
-    json_text = json.dumps(state, indent=2, ensure_ascii=False) + "\n"
-    FOLDERS_JSON.write_text(json_text, encoding="utf-8")
-    LEGACY_JSON.write_text(json_text, encoding="utf-8")
-    TIETIX_JSON.write_text(json_text, encoding="utf-8")
+    # 1. Ensure .directory files are up-to-date
+    for idx, f in enumerate(folders, start=1):
+        folder_id = re.sub(r"[^A-Za-z0-9_-]", "_", f.get("id") or f"Folder_{idx:02d}")
+        title = f.get("title") or f"Folder {idx}"
+        icon = f.get("icon") or "icon-launcher-folder-01"
+        dir_file = LIPSTICK_CONFIG_DIR / f"{folder_id}.directory"
+        f["dir_file"] = dir_file
+        dir_content = f"[Desktop Entry]\nType=Directory\nName={title}\nIcon={icon}\n"
+        dir_file.write_text(dir_content, encoding="utf-8")
 
-    # Write .directory files and construct applications.menu XML
+    # 2. Build XML
     lines = [
         '<?xml version="1.0" encoding="UTF-8"?>',
         "<Menu>",
@@ -361,32 +280,39 @@ def save_state_and_menu(state):
         "    </Name>",
     ]
 
-    # First place pinned root apps at top so they are immediately accessible
-    for fn in state["root_apps"]:
+    for fn in root_apps:
         lines.append(f"    <Filename>{_xml_escape(fn)}</Filename>")
 
-    # Then place folders
-    for idx, folder in enumerate(state["folders"], start=1):
-        folder_id = re.sub(r"[^A-Za-z0-9_-]", "_", folder.get("id") or f"Folder_{idx:02d}")
-        title = folder.get("title") or f"Folder {idx}"
-        icon = folder.get("icon") or "icon-launcher-folder-01"
-        dir_file = LIPSTICK_CONFIG_DIR / f"{folder_id}.directory"
-        dir_content = f"[Desktop Entry]\nType=Directory\nName={title}\nIcon={icon}\n"
-        dir_file.write_text(dir_content, encoding="utf-8")
-
+    for f in folders:
+        title = f.get("title", "")
+        dir_file = f.get("dir_file")
         lines.append("    <Menu>")
         lines.append(f"        <Name>{_xml_escape(title)}</Name>")
         lines.append(f"        <Directory>{_xml_escape(str(dir_file))}</Directory>")
-        for fn in folder.get("apps", []):
+        for fn in f.get("apps", []):
             lines.append(f"        <Filename>{_xml_escape(fn)}</Filename>")
         lines.append("    </Menu>")
 
     lines.append("</Menu>")
     xml_content = "\n".join(lines) + "\n"
 
-    # Validate XML before writing
+    # Verify XML parse before writing to disk
     ET.fromstring(xml_content)
-    APPLICATIONS_MENU.write_text(xml_content, encoding="utf-8")
+
+    # Atomic write to applications.menu
+    tmp_path = LIPSTICK_CONFIG_DIR / "applications.menu.taidi_tmp"
+    tmp_path.write_text(xml_content, encoding="utf-8")
+    os.replace(tmp_path, APPLICATIONS_MENU)
+
+    # Informational JSON export
+    state = {
+        "root_apps": root_apps,
+        "folders": [
+            {"id": f["id"], "title": f["title"], "icon": f["icon"], "apps": f["apps"]}
+            for f in folders
+        ]
+    }
+    EXPORT_JSON.write_text(json.dumps(state, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
 def _xml_escape(val: str) -> str:
@@ -398,33 +324,36 @@ def _xml_escape(val: str) -> str:
     )
 
 
-def verify_integrity():
-    """Verifies XML validity and ensures zero missing or duplicate apps compared to backup."""
-    tree = ET.parse(APPLICATIONS_MENU)
-    root = tree.getroot()
-    menu_apps = [el.text.strip() for el in root.iter("Filename") if el.text and el.text.strip()]
-    expected_apps = get_authoritative_app_list()
+def verify_integrity(root_apps, folders):
+    """Checks for duplicate or missing applications."""
+    all_current = list(root_apps)
+    for f in folders:
+        all_current.extend(f["apps"])
 
-    duplicates = [x for x in set(menu_apps) if menu_apps.count(x) > 1]
-    missing = [x for x in expected_apps if x not in menu_apps]
-    extra = [x for x in menu_apps if x not in expected_apps]
+    # Expected list from original menu if available
+    expected = []
+    source = BACKUP_MENU if BACKUP_MENU.exists() else APPLICATIONS_MENU
+    if source.exists():
+        tree = ET.parse(source)
+        for el in tree.getroot().iter("Filename"):
+            if el.text and el.text.strip():
+                fn = el.text.strip()
+                if fn not in expected:
+                    expected.append(fn)
 
-    ok = (len(duplicates) == 0 and len(missing) == 0)
+    duplicates = [x for x in set(all_current) if all_current.count(x) > 1]
+    missing = [x for x in expected if x not in all_current]
+
     return {
-        "ok": ok,
-        "total_expected": len(expected_apps),
-        "total_in_menu": len(menu_apps),
+        "ok": len(duplicates) == 0 and len(missing) == 0,
+        "total_current": len(all_current),
+        "total_expected": len(expected) if expected else len(all_current),
         "duplicates": duplicates,
         "missing": missing,
-        "extra": extra,
     }
 
 
-def resolve_app(query: str, state: dict, meta: dict):
-    """Finds an app desktop filename by exact match or case-insensitive substring of filename/title."""
-    all_apps = list(state["root_apps"])
-    for f in state["folders"]:
-        all_apps.extend(f["apps"])
+def resolve_app(query: str, all_apps: list, meta: dict):
     if query in all_apps:
         return query
     if f"{query}.desktop" in all_apps:
@@ -440,67 +369,81 @@ def resolve_app(query: str, state: dict, meta: dict):
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else "status"
     meta = get_desktop_metadata()
+    root_apps, folders = load_menu()
+
+    all_apps = list(root_apps)
+    for f in folders:
+        all_apps.extend(f["apps"])
 
     if cmd in ("init-default", "reset-default"):
-        state = build_default_state()
-        save_state_and_menu(state)
-        res = verify_integrity()
-        print(f"Applied default folder layout: {len(state['root_apps'])} root apps, {len(state['folders'])} folders.")
-        print(f"Integrity check: {json.dumps(res)}")
-        return
+        assigned = set()
+        new_root = []
+        for fn in DEFAULT_PINNED_ROOT:
+            if fn in all_apps and fn not in assigned:
+                new_root.append(fn)
+                assigned.add(fn)
 
-    if cmd == "apply":
-        state = load_state()
-        save_state_and_menu(state)
-        res = verify_integrity()
-        print(f"Applied folders.json: {len(state['root_apps'])} root apps, {len(state['folders'])} folders.")
-        print(f"Integrity check: {json.dumps(res)}")
-        return
+        new_folders = []
+        for fdef in DEFAULT_FOLDERS:
+            f_apps = []
+            for fn in fdef["apps"]:
+                if fn in all_apps and fn not in assigned:
+                    f_apps.append(fn)
+                    assigned.add(fn)
+            new_folders.append({
+                "id": fdef["id"],
+                "title": fdef["title"],
+                "icon": fdef["icon"],
+                "apps": f_apps,
+            })
 
-    if cmd == "sync-from-menu":
-        state = sync_from_menu()
-        res = verify_integrity()
-        print(f"Synced applications.menu -> folders.json ({len(state['folders'])} folders).")
+        for fn in all_apps:
+            if fn not in assigned:
+                new_root.append(fn)
+                assigned.add(fn)
+
+        save_menu(new_root, new_folders)
+        res = verify_integrity(new_root, new_folders)
+        print(f"Applied default layout: {len(new_root)} root apps, {len(new_folders)} folders.")
         print(f"Integrity check: {json.dumps(res)}")
         return
 
     if cmd == "create-folder":
         if len(sys.argv) < 3:
-            print("Usage: jolla_folders.py create-folder <Title> [icon_id]")
+            print("Usage: taidi create-folder <Title> [icon_id]")
             sys.exit(1)
         title = sys.argv[2]
         icon = sys.argv[3] if len(sys.argv) > 3 else "icon-launcher-folder-01"
-        state = load_state()
-        for f in state["folders"]:
+        for f in folders:
             if f["title"].lower() == title.lower():
                 f["icon"] = icon
-                save_state_and_menu(state)
-                print(f"Updated existing folder '{title}'.")
+                save_menu(root_apps, folders)
+                print(f"Updated icon for folder '{title}'.")
                 return
-        next_idx = len(state["folders"]) + 1
-        used_ids = {f["id"] for f in state["folders"]}
+
+        next_idx = len(folders) + 1
+        used_ids = {f["id"] for f in folders}
         while f"Folder_{next_idx:02d}" in used_ids:
             next_idx += 1
-        state["folders"].append({
+        folders.append({
             "id": f"Folder_{next_idx:02d}",
             "title": title,
             "icon": icon,
             "apps": [],
         })
-        save_state_and_menu(state)
+        save_menu(root_apps, folders)
         print(f"Created folder '{title}' ({icon}).")
         return
 
     if cmd == "rename-folder":
         if len(sys.argv) < 4:
-            print("Usage: jolla_folders.py rename-folder <OldTitle> <NewTitle>")
+            print("Usage: taidi rename-folder <OldTitle> <NewTitle>")
             sys.exit(1)
         old_t, new_t = sys.argv[2], sys.argv[3]
-        state = load_state()
-        for f in state["folders"]:
+        for f in folders:
             if f["title"].lower() == old_t.lower() or f["id"].lower() == old_t.lower():
                 f["title"] = new_t
-                save_state_and_menu(state)
+                save_menu(root_apps, folders)
                 print(f"Renamed folder '{old_t}' -> '{new_t}'.")
                 return
         print(f"Folder '{old_t}' not found.")
@@ -508,83 +451,79 @@ def main():
 
     if cmd == "delete-folder":
         if len(sys.argv) < 3:
-            print("Usage: jolla_folders.py delete-folder <Title>")
+            print("Usage: taidi delete-folder <Title>")
             sys.exit(1)
         target = sys.argv[2].lower()
-        state = load_state()
         kept = []
         removed = None
-        for f in state["folders"]:
+        for f in folders:
             if f["title"].lower() == target or f["id"].lower() == target:
                 removed = f
                 for fn in f["apps"]:
-                    if fn not in state["root_apps"]:
-                        state["root_apps"].append(fn)
+                    if fn not in root_apps:
+                        root_apps.append(fn)
             else:
                 kept.append(f)
         if not removed:
             print(f"Folder '{sys.argv[2]}' not found.")
             sys.exit(1)
-        state["folders"] = kept
-        save_state_and_menu(state)
-        print(f"Deleted folder '{removed['title']}' and moved {len(removed['apps'])} apps to root.")
+        save_menu(root_apps, kept)
+        print(f"Deleted folder '{removed['title']}' and returned {len(removed['apps'])} apps to main grid.")
         return
 
     if cmd in ("move", "move-app"):
         if len(sys.argv) < 4:
-            print("Usage: jolla_folders.py move <AppNameOrDesktop> <FolderTitleOrRoot>")
+            print("Usage: taidi move <AppNameOrDesktop> <FolderTitleOrRoot>")
             sys.exit(1)
         app_query, target_folder = sys.argv[2], sys.argv[3]
-        state = load_state()
-        fn = resolve_app(app_query, state, meta)
+        fn = resolve_app(app_query, all_apps, meta)
         if not fn:
             print(f"App matching '{app_query}' not found.")
             sys.exit(1)
 
-        # Remove from current location
-        if fn in state["root_apps"]:
-            state["root_apps"].remove(fn)
-        for f in state["folders"]:
+        # Remove from existing location
+        if fn in root_apps:
+            root_apps.remove(fn)
+        for f in folders:
             if fn in f["apps"]:
                 f["apps"].remove(fn)
 
         if target_folder.lower() in ("root", "main", "/"):
-            state["root_apps"].append(fn)
-            save_state_and_menu(state)
-            print(f"Moved '{fn}' ({meta.get(fn, {}).get('title', fn)}) to root grid.")
+            root_apps.append(fn)
+            save_menu(root_apps, folders)
+            print(f"Moved '{fn}' to main grid.")
             return
 
-        for f in state["folders"]:
+        for f in folders:
             if f["title"].lower() == target_folder.lower() or f["id"].lower() == target_folder.lower():
                 f["apps"].append(fn)
-                save_state_and_menu(state)
-                print(f"Moved '{fn}' ({meta.get(fn, {}).get('title', fn)}) -> folder '{f['title']}'.")
+                save_menu(root_apps, folders)
+                print(f"Moved '{fn}' -> folder '{f['title']}'.")
                 return
 
-        # If target folder doesn't exist yet, create it automatically
-        next_idx = len(state["folders"]) + 1
-        used_ids = {f["id"] for f in state["folders"]}
+        # Auto-create if not found
+        next_idx = len(folders) + 1
+        used_ids = {f["id"] for f in folders}
         while f"Folder_{next_idx:02d}" in used_ids:
             next_idx += 1
-        state["folders"].append({
+        folders.append({
             "id": f"Folder_{next_idx:02d}",
             "title": target_folder,
             "icon": "icon-launcher-folder-01",
             "apps": [fn],
         })
-        save_state_and_menu(state)
+        save_menu(root_apps, folders)
         print(f"Created folder '{target_folder}' and moved '{fn}' into it.")
         return
 
-    # Default: status / verify
-    state = load_state()
-    res = verify_integrity() if APPLICATIONS_MENU.exists() else {"ok": False}
-    print(f"=== Jolla Launcher Status ===")
-    print(f"Root apps ({len(state['root_apps'])}):")
-    for fn in state["root_apps"]:
+    # Default: status
+    res = verify_integrity(root_apps, folders)
+    print("=== TAIDI Launcher Status ===")
+    print(f"Main grid apps ({len(root_apps)}):")
+    for fn in root_apps:
         print(f"  - {meta.get(fn, {}).get('title', fn)} ({fn})")
-    print(f"\nFolders ({len(state['folders'])}):")
-    for f in state["folders"]:
+    print(f"\nFolders ({len(folders)}):")
+    for f in folders:
         titles = [meta.get(fn, {}).get("title", fn) for fn in f["apps"]]
         print(f"  [{f['id']}] {f['title']} ({f['icon']}) - {len(f['apps'])} apps: {', '.join(titles)}")
     print(f"\nIntegrity: {json.dumps(res)}")

@@ -1,62 +1,73 @@
 #!/bin/sh
 # TAIDI APP - Uninstaller / Restore Script
-# Restores original stock Lipstick QML components, dconf settings, and launcher menu.
+# Reverts QML patches, resets dconf settings, and leaves system in stock state.
 set -e
 
-BACKUP_DIR="$HOME/lipstick_backup"
+SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 LAUNCHER_DIR="/usr/share/lipstick-jolla-home-qt5/launcher"
-CONFIG_DIR="$HOME/.config/lipstick"
+PATCHER="python3 $SCRIPT_DIR/scripts/patcher.py"
+
+# Resolve target non-root user
+if [ "$(id -u)" = "0" ]; then
+    TARGET_USER="${SUDO_USER:-defaultuser}"
+else
+    TARGET_USER="$USER"
+fi
+TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
+BACKUP_DIR="$TARGET_HOME/lipstick_backup"
 
 echo "=== TAIDI APP Uninstaller ==="
+echo "Target user: $TARGET_USER ($TARGET_HOME)"
 
-if [ ! -d "$BACKUP_DIR" ]; then
-    echo "Error: Backup directory $BACKUP_DIR not found!"
-    exit 1
+if [ "$(id -u)" != "0" ]; then
+    echo "Root privileges required to revert launcher components."
+    echo "Re-running with devel-su..."
+    exec devel-su /bin/sh "$0" "$@"
 fi
 
-# 1. Restore applications.menu if backup exists
+# 1. Revert QML patches or restore .taidi_orig
+echo "[1/4] Reverting QML patches..."
+if [ -f "$SCRIPT_DIR/patches/LauncherGrid.patch" ]; then
+    if ! $PATCHER -R "$LAUNCHER_DIR/LauncherGrid.qml" "$SCRIPT_DIR/patches/LauncherGrid.patch" 2>/dev/null; then
+        if [ -f "$LAUNCHER_DIR/LauncherGrid.qml.taidi_orig" ]; then
+            echo "Patch revert failed or already clean, restoring .taidi_orig backup..."
+            cp -f "$LAUNCHER_DIR/LauncherGrid.qml.taidi_orig" "$LAUNCHER_DIR/LauncherGrid.qml"
+        fi
+    fi
+fi
+
+if [ -f "$SCRIPT_DIR/patches/LauncherFolder.patch" ]; then
+    if ! $PATCHER -R "$LAUNCHER_DIR/LauncherFolder.qml" "$SCRIPT_DIR/patches/LauncherFolder.patch" 2>/dev/null; then
+        if [ -f "$LAUNCHER_DIR/LauncherFolder.qml.taidi_orig" ]; then
+            echo "Patch revert failed or already clean, restoring .taidi_orig backup..."
+            cp -f "$LAUNCHER_DIR/LauncherFolder.qml.taidi_orig" "$LAUNCHER_DIR/LauncherFolder.qml"
+        fi
+    fi
+fi
+
+# Clean up temporary backup copies in launcher dir
+rm -f "$LAUNCHER_DIR/LauncherGrid.qml.taidi_orig" "$LAUNCHER_DIR/LauncherFolder.qml.taidi_orig"
+
+# 2. Reset experimental dconf grid settings
+echo "[2/4] Resetting dconf grid settings..."
+su - "$TARGET_USER" -c "dconf reset -f /desktop/sailfish/experimental/"
+
+# 3. Optionally restore applications.menu if backup exists
 if [ -f "$BACKUP_DIR/config_lipstick/applications.menu" ]; then
-    echo "[1/4] Restoring original applications.menu..."
-    cp -f "$BACKUP_DIR/config_lipstick/applications.menu" "$CONFIG_DIR/applications.menu"
-fi
-
-# 2. Restore stock QML files
-echo "[2/4] Restoring original QML launcher components..."
-TMP_DIR="/tmp/taidi_uninstall_$$"
-mkdir -p "$TMP_DIR"
-
-cat << 'EOF' > "$TMP_DIR/restore_root.sh"
-#!/bin/sh
-set -e
-BACKUP_DIR="$HOME/lipstick_backup"
-LAUNCHER_DIR="/usr/share/lipstick-jolla-home-qt5/launcher"
-if [ -d "$BACKUP_DIR/usr_launcher" ]; then
-    cp -f "$BACKUP_DIR/usr_launcher/"*.qml "$LAUNCHER_DIR/"
-    chown root:root "$LAUNCHER_DIR/"*.qml
-    chmod 644 "$LAUNCHER_DIR/"*.qml
-fi
-EOF
-chmod +x "$TMP_DIR/restore_root.sh"
-
-if [ "$(id -u)" = "0" ]; then
-    "$TMP_DIR/restore_root.sh"
+    echo "[3/4] Restoring original applications.menu from backup..."
+    cp -f "$BACKUP_DIR/config_lipstick/applications.menu" "$TARGET_HOME/.config/lipstick/applications.menu"
+    chown "$TARGET_USER:$(id -gn "$TARGET_USER")" "$TARGET_HOME/.config/lipstick/applications.menu"
 else
-    devel-su -c /bin/sh "$TMP_DIR/restore_root.sh"
-fi
-rm -rf "$TMP_DIR"
-
-# 3. Reset dconf experimental settings
-echo "[3/4] Resetting dconf grid settings..."
-dconf reset -f /desktop/sailfish/experimental/
-if [ -s "$BACKUP_DIR/dconf_experimental.dump" ]; then
-    dconf load /desktop/sailfish/experimental/ < "$BACKUP_DIR/dconf_experimental.dump"
+    echo "[3/4] Keeping current menu structure (no stock backup found)."
 fi
 
-# 4. Restart Lipstick
+# 4. Remove global CLI
+rm -f /usr/local/bin/taidi
+
+# 5. Restart Lipstick
 echo "[4/4] Restarting Lipstick..."
-(sleep 1 && mcetool --set-display-state=on 2>/dev/null || true) &
-systemctl --user restart lipstick
+su - "$TARGET_USER" -c "(sleep 1 && mcetool --set-display-state=on 2>/dev/null || true) & systemctl --user restart lipstick"
 
 echo ""
-echo "=== Restoration complete! ==="
+echo "=== Taidi App uninstalled successfully! ==="
 echo "Stock Sailfish OS launcher restored."

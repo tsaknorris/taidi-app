@@ -1,0 +1,352 @@
+--- /home/defaultuser/lipstick_backup/usr_launcher/LauncherGrid.qml
++++ /usr/share/lipstick-jolla-home-qt5/launcher/LauncherGrid.qml
+@@ -28,6 +28,8 @@
+     property alias reorderItem: gridManager.reorderItem
+     property alias gridManager: gridManager
+     property bool canUninstall: AccessControl.hasGroup(AccessControl.RealUid, "sailfish-system")
++    property var quickMoveApp: null
++    property int quickMoveIndex: -1
+     property int topMargin: Math.max(_page.orientation === Orientation.Portrait
+                                      ? Screen.topCutout.height : 0,
+                                      largeScreen ? Theme.paddingLarge : Theme.paddingSmall)
+@@ -97,6 +99,10 @@
+     function setEditMode(enabled) {
+         gridManager.setEditMode(enabled)
+         removeApplicationEnabled = enabled
++        if (!enabled) {
++            quickMoveApp = null
++            quickMoveIndex = -1
++        }
+     }
+ 
+     onVisibleChanged: if (!visible) setEditMode(false)
+@@ -233,9 +239,264 @@
+         view: gridview
+         contentContainer: gridview.contentItem
+         dragContainer: launcherPager
++        Component.onCompleted: startReorderTimer.interval = 350
+         onFolderIndexChanged: if (folderIndex == -1) newFolderIcon.active = false
+     }
+ 
++    // Floating Edit Mode Toolbar & Quick Move Overlay (Root Grid only)
++    Rectangle {
++        id: editModeToolbar
++
++        parent: rootFolder ? launcherPager : gridview
++        visible: rootFolder && gridview.launcherEditMode && !gridview.openedChildFolder && !gridview.quickMoveApp
++        z: 15
++        x: 0
++        y: gridview.topMargin
++        width: parent ? parent.width : 0
++        height: Theme.itemSizeSmall
++        color: Theme.rgba(Theme.overlayBackgroundColor, 0.92)
++
++        Row {
++            anchors.fill: parent
++            anchors.leftMargin: Theme.paddingMedium
++            anchors.rightMargin: Theme.paddingMedium
++            spacing: Theme.paddingSmall
++
++            BackgroundItem {
++                width: (parent.width - Theme.paddingSmall * 2) * 0.42
++                height: parent.height
++                onClicked: {
++                    var nf = launcherModel.createFolder(launcherModel.itemCount, "New Folder")
++                    if (nf) {
++                        nf.iconId = "icon-launcher-folder-01"
++                        setEditMode(false)
++                        showFolder(nf)
++                    }
++                }
++                Rectangle {
++                    anchors.fill: parent
++                    anchors.margins: Theme.paddingSmall / 2
++                    radius: Theme.paddingSmall
++                    color: Theme.rgba(Theme.highlightBackgroundColor, 0.25)
++                    border.color: Theme.highlightColor
++                    border.width: 1
++                    Label {
++                        anchors.centerIn: parent
++                        text: "+ New Folder"
++                        font.pixelSize: Theme.fontSizeExtraSmall
++                        color: Theme.highlightColor
++                    }
++                }
++            }
++
++            Label {
++                width: (parent.width - Theme.paddingSmall * 2) * 0.36
++                anchors.verticalCenter: parent.verticalCenter
++                text: "Tap app to move"
++                font.pixelSize: Theme.fontSizeTiny
++                color: Theme.secondaryColor
++                horizontalAlignment: Text.AlignHCenter
++                wrapMode: Text.Wrap
++            }
++
++            BackgroundItem {
++                width: (parent.width - Theme.paddingSmall * 2) * 0.22
++                height: parent.height
++                onClicked: setEditMode(false)
++                Rectangle {
++                    anchors.fill: parent
++                    anchors.margins: Theme.paddingSmall / 2
++                    radius: Theme.paddingSmall
++                    color: Theme.rgba(Theme.primaryColor, 0.15)
++                    Label {
++                        anchors.centerIn: parent
++                        text: "Done"
++                        font.pixelSize: Theme.fontSizeExtraSmall
++                        color: Theme.primaryColor
++                    }
++                }
++            }
++        }
++    }
++
++    Rectangle {
++        id: quickMoveOverlay
++
++        parent: rootFolder ? launcherPager : gridview
++        visible: rootFolder && gridview.quickMoveApp !== null
++        z: 25
++        anchors.fill: parent
++        color: Theme.rgba(Theme.overlayBackgroundColor, 0.96)
++
++        MouseArea {
++            anchors.fill: parent
++            onClicked: {}
++        }
++
++        Column {
++            id: quickMoveHeader
++            anchors {
++                top: parent.top
++                topMargin: gridview.topMargin + Theme.paddingMedium
++                left: parent.left
++                right: parent.right
++                leftMargin: Theme.horizontalPageMargin
++                rightMargin: Theme.horizontalPageMargin
++            }
++            spacing: Theme.paddingMedium
++
++            Row {
++                width: parent.width
++                spacing: Theme.paddingMedium
++
++                LauncherIcon {
++                    size: Theme.iconSizeSmallPlus
++                    icon: gridview.quickMoveApp ? gridview.quickMoveApp.iconId : ""
++                    anchors.verticalCenter: parent.verticalCenter
++                }
++
++                Label {
++                    width: parent.width - Theme.iconSizeSmallPlus - closeQuickMoveBtn.width - Theme.paddingMedium * 2
++                    anchors.verticalCenter: parent.verticalCenter
++                    text: gridview.quickMoveApp ? ("Move \"" + gridview.quickMoveApp.title + "\" to:") : ""
++                    font.pixelSize: Theme.fontSizeMedium
++                    color: Theme.highlightColor
++                    truncationMode: TruncationMode.Fade
++                }
++
++                BackgroundItem {
++                    id: closeQuickMoveBtn
++                    width: Theme.itemSizeSmall
++                    height: Theme.itemSizeSmall
++                    onClicked: {
++                        gridview.quickMoveApp = null
++                        gridview.quickMoveIndex = -1
++                    }
++                    Label {
++                        anchors.centerIn: parent
++                        text: "✕"
++                        font.pixelSize: Theme.fontSizeLarge
++                        color: Theme.primaryColor
++                    }
++                }
++            }
++
++            Row {
++                width: parent.width
++                spacing: Theme.paddingSmall
++
++                TextField {
++                    id: newFolderInput
++                    width: parent.width - createWithAppBtn.width - Theme.paddingSmall
++                    placeholderText: "New folder name..."
++                    labelVisible: false
++                    EnterKey.iconSource: "image://theme/icon-m-enter-accept"
++                    EnterKey.onClicked: createWithAppBtn.clicked(null)
++                }
++
++                BackgroundItem {
++                    id: createWithAppBtn
++                    width: Theme.itemSizeExtraLarge
++                    height: Theme.itemSizeSmall
++                    onClicked: {
++                        if (gridview.quickMoveApp) {
++                            var fname = newFolderInput.text.trim()
++                            if (fname.length === 0) fname = "New Folder"
++                            var appObj = gridview.quickMoveApp
++                            var nf = launcherModel.createFolder(launcherModel.itemCount, fname)
++                            if (nf) {
++                                nf.iconId = "icon-launcher-folder-01"
++                                launcherModel.moveToFolder(appObj, nf)
++                            }
++                            newFolderInput.text = ""
++                            newFolderInput.focus = false
++                            gridview.quickMoveApp = null
++                            gridview.quickMoveIndex = -1
++                            setEditMode(false)
++                        }
++                    }
++                    Rectangle {
++                        anchors.fill: parent
++                        radius: Theme.paddingSmall
++                        color: Theme.rgba(Theme.highlightBackgroundColor, 0.3)
++                        border.color: Theme.highlightColor
++                        border.width: 1
++                        Label {
++                            anchors.centerIn: parent
++                            text: "+ Create"
++                            font.pixelSize: Theme.fontSizeSmall
++                            color: Theme.highlightColor
++                        }
++                    }
++                }
++            }
++
++            Separator {
++                width: parent.width
++                color: Theme.highlightColor
++            }
++        }
++
++        SilicaFlickable {
++            anchors {
++                top: quickMoveHeader.bottom
++                topMargin: Theme.paddingSmall
++                left: parent.left
++                right: parent.right
++                bottom: parent.bottom
++            }
++            contentHeight: folderListColumn.height + Theme.paddingLarge
++            clip: true
++
++            VerticalScrollDecorator {}
++
++            Column {
++                id: folderListColumn
++                width: parent.width
++
++                Repeater {
++                    model: rootFolder ? gridview.launcherModel : null
++                    delegate: BackgroundItem {
++                        width: folderListColumn.width
++                        height: isFolderItem ? Theme.itemSizeSmall : 0
++                        visible: isFolderItem
++                        property bool isFolderItem: model.object && model.object.type === LauncherModel.Folder
++
++                        Row {
++                            anchors.fill: parent
++                            anchors.leftMargin: Theme.horizontalPageMargin
++                            anchors.rightMargin: Theme.horizontalPageMargin
++                            spacing: Theme.paddingMedium
++
++                            LauncherIcon {
++                                size: Theme.iconSizeSmallPlus
++                                icon: isFolderItem ? model.object.iconId : ""
++                                anchors.verticalCenter: parent.verticalCenter
++                            }
++
++                            Label {
++                                anchors.verticalCenter: parent.verticalCenter
++                                text: isFolderItem ? (model.object.title + " (" + model.object.itemCount + ")") : ""
++                                font.pixelSize: Theme.fontSizeMedium
++                                color: Theme.primaryColor
++                            }
++                        }
++
++                        onClicked: {
++                            if (isFolderItem && gridview.quickMoveApp) {
++                                var appObj = gridview.quickMoveApp
++                                gridview.quickMoveApp = null
++                                gridview.quickMoveIndex = -1
++                                launcherModel.moveToFolder(appObj, model.object)
++                                setEditMode(false)
++                            }
++                        }
++                    }
++                }
++            }
++        }
++    }
++
+     Image {
+         id: newFolderIcon
+ 
+@@ -285,7 +546,8 @@
+         property Item uninstallButton
+         property bool isUpdating: model.object.isUpdating
+         property Item updatingItem
+-        property bool isAndroidApp: model.object.readValue("X-apkd-packageName") != ""
++        property bool isAndroidApp: !isFolder && model.object && model.object.readValue
++                                    ? model.object.readValue("X-apkd-packageName") != "" : false
+         // children reparented
+         property real itemOpacity: (appsupportPolicy.value || !isAndroidApp)
+                                    ? 1.0 : Theme.opacityLow
+@@ -344,7 +606,15 @@
+                     Lipstick.compositor.setCurrentWindow(Lipstick.compositor.launcherLayer.window)
+                 }
+             } else if (launcherEditMode) {
+-                setEditMode(false)
++                if (rootFolder) {
++                    gridview.quickMoveApp = model.object
++                    gridview.quickMoveIndex = index
++                } else if (launcherModel.parentFolder) {
++                    var parentIdx = launcherModel.parentFolder.indexOf(launcherModel)
++                    launcherModel.parentFolder.moveToFolder(model.object, launcherModel.parentFolder, parentIdx + 1)
++                } else {
++                    setEditMode(false)
++                }
+             } else {
+                 if (wrapper.isAndroidApp && !appsupportPolicy.value) {
+                     return
+@@ -427,10 +697,7 @@
+             ignoreUnknownSignals: true
+             onItemRemoved: {
+                 var object = model.object
+-                if (object.itemCount === 1) {
+-                    // One item remains in folder. Replace folder with item.
+-                    var parentFolderIndex = object.parentFolder.indexOf(object)
+-                    object.parentFolder.moveToFolder(object.get(0), object.parentFolder, parentFolderIndex)
++                if (object && object.itemCount === 0) {
+                     object.destroyFolder()
+                 }
+             }
+@@ -439,6 +706,7 @@
+         LauncherIcon {
+             id: launcherIcon
+ 
++            size: Math.round(Theme.iconSizeLauncher * 0.85)
+             anchors {
+                 centerIn: parent
+                 verticalCenterOffset: Math.floor(-launcherText.height / 2)
+@@ -449,7 +717,7 @@
+                                                         : wrapper.itemOpacity
+ 
+             Text {
+-                font.pixelSize: Theme.fontSizeExtraLarge
++                font.pixelSize: Theme.fontSizeLarge
+                 font.family: Theme.fontFamilyHeading
+                 text: folderItemCount > 0 ? folderItemCount : ""
+                 color: Theme.lightPrimaryColor
+@@ -489,7 +757,7 @@
+             Behavior on opacity { FadeAnimation {} }
+ 
+             // If the launcher icons use custom size scale the busy indicator accordingly to align dimensions
+-            scale: (Theme.iconSizeLauncher / Theme.pixelRatio) / 86
++            scale: (launcherIcon.size / Theme.pixelRatio) / 86
+ 
+             Label {
+                 anchors.centerIn: parent
