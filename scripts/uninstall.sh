@@ -64,9 +64,9 @@ fi
 # 4. Remove global CLI
 rm -f /usr/local/bin/taidi
 
-# 5. Restart Lipstick
+# 5. Restart Lipstick and dependent session boosters (Camera, Browser, Email)
 echo "[4/4] Restarting Lipstick..."
-su - "$TARGET_USER" -c "(sleep 1 && mcetool --set-display-state=on 2>/dev/null || true) & systemctl --user restart lipstick"
+su - "$TARGET_USER" -c "(sleep 1 && mcetool --set-display-state=on 2>/dev/null || true) & systemctl --user restart lipstick && systemctl --user start user-session.target post-user-session.target"
 
 echo ""
 echo "=== Taidi App uninstalled successfully! ==="

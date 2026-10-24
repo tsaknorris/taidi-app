@@ -85,7 +85,7 @@ dconf write /desktop/sailfish/experimental/launcher_rows_landscape 4
 
 # 7. Restart Lipstick with auto-rollback guard
 echo "[5/5] Restarting Lipstick and validating runtime..."
-su - "$TARGET_USER" -c "(sleep 1 && mcetool --set-display-state=on 2>/dev/null || true) & systemctl --user restart lipstick"
+su - "$TARGET_USER" -c "(sleep 1 && mcetool --set-display-state=on 2>/dev/null || true) & systemctl --user restart lipstick && systemctl --user start user-session.target post-user-session.target"
 
 # Healthcheck loop (up to 8 seconds)
 LIPSTICK_HEALTHY=0
@@ -101,7 +101,7 @@ if [ "$LIPSTICK_HEALTHY" != "1" ]; then
     echo "WARNING: Lipstick failed to start cleanly! Rolling back patches..."
     $PATCHER -R "$LAUNCHER_DIR/LauncherGrid.qml" "$SCRIPT_DIR/patches/LauncherGrid.patch" 2>/dev/null || cp -f "$LAUNCHER_DIR/LauncherGrid.qml.taidi_orig" "$LAUNCHER_DIR/LauncherGrid.qml"
     $PATCHER -R "$LAUNCHER_DIR/LauncherFolder.qml" "$SCRIPT_DIR/patches/LauncherFolder.patch" 2>/dev/null || cp -f "$LAUNCHER_DIR/LauncherFolder.qml.taidi_orig" "$LAUNCHER_DIR/LauncherFolder.qml"
-    su - "$TARGET_USER" -c "systemctl --user restart lipstick"
+    su - "$TARGET_USER" -c "systemctl --user restart lipstick && systemctl --user start user-session.target post-user-session.target"
     echo "Rollback completed. System restored safely."
     exit 1
 fi

@@ -87,7 +87,7 @@ Tämä kumoaa patchit (`patch -R`), palauttaa alkuperäiset tiedostot `.taidi_or
 Hätätilanteessa (jos UI ei jostain syystä nousisi):
 ```bash
 devel-su cp -f /usr/share/lipstick-jolla-home-qt5/launcher/*.taidi_orig /usr/share/lipstick-jolla-home-qt5/launcher/
-systemctl --user restart lipstick
+systemctl --user restart lipstick && systemctl --user start user-session.target post-user-session.target
 ```
 
 ---
