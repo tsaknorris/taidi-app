@@ -1,5 +1,7 @@
 # Taidi App
 
+*[In English (README.en.md)](README.en.md)*
+
 Kun huone tai sovellusvalikko on sekaisin, se siivotaan. Ei "tidy up", vaan **Taidi App**.
 
 Taidi App tekee Sailfish OS:n sovellusvalikosta (Lipstick) siistin ja helposti hallittavan:
